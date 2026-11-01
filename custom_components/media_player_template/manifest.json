@@ -1,12 +1,17 @@
 {
-    "domain": "media_player_template",
-    "name": "Media player template",
-    "documentation": "https://github.com/boc-tothefuture/media_player.template",
-    "issue_tracker": "https://github.com/boc-tothefuture/media_player.template/issues",
-    "requirements": [],
-    "dependencies": [],
-    "after_dependencies": ["template"],
-    "codeowners": ["@Sennevds", "@boc-tothefuture"],
-    "version": "1.1.0",
-    "iot_class": "local_push"
+  "domain": "media_player_template",
+  "name": "Media player template",
+  "after_dependencies": [
+    "template"
+  ],
+  "codeowners": [
+    "@Sennevds",
+    "@boc-tothefuture"
+  ],
+  "dependencies": [],
+  "documentation": "https://github.com/boc-tothefuture/media_player.template",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/boc-tothefuture/media_player.template/issues",
+  "requirements": [],
+  "version": "1.1.0"
 }

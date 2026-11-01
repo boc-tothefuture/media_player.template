@@ -2,6 +2,7 @@
 https://github.com/Sennevds/media_player.template
 """
 
+import datetime
 import logging
 from typing import Any
 
@@ -70,6 +71,7 @@ CONF_MEDIA_DURATION_TEMPLATE = "media_duration_template"
 CONF_MEDIA_EPISODE_TEMPLATE = "media_episode_template"
 CONF_MEDIA_IMAGE_URL_REMOTELY_ACCESSIBLE = "media_image_url_remotely_accessible"
 CONF_MEDIA_IMAGE_URL_TEMPLATE = "media_image_url_template"
+CONF_MEDIA_POSITION_UPDATED_AT_TEMPLATE = "media_position_updated_at_template"
 CONF_MEDIA_SEASON_TEMPLATE = "media_season_template"
 CONF_MEDIA_SERIES_TITLE_TEMPLATE = "media_series_title_template"
 CONF_MEDIAPLAYERS = "media_players"
@@ -131,6 +133,7 @@ MEDIA_PLAYER_SCHEMA = vol.Schema(
         vol.Optional(CONF_MEDIA_EPISODE_TEMPLATE): cv.template,
         vol.Optional(CONF_MEDIA_IMAGE_URL_REMOTELY_ACCESSIBLE): cv.boolean,
         vol.Optional(CONF_MEDIA_IMAGE_URL_TEMPLATE): cv.template,
+        vol.Optional(CONF_MEDIA_POSITION_UPDATED_AT_TEMPLATE): cv.template,
         vol.Optional(CONF_MEDIA_SEASON_TEMPLATE): cv.template,
         vol.Optional(CONF_MEDIA_SERIES_TITLE_TEMPLATE): cv.template,
         vol.Optional(CONF_MUTE_ACTION): cv.SCRIPT_SCHEMA,
@@ -290,9 +293,14 @@ class MediaPlayerTemplate(TemplateEntity, MediaPlayerEntity):
         self._media_album_artist_template = config.get(CONF_MEDIA_ALBUM_ARTIST_TEMPLATE)
         self._media_content_type_template = config.get(CONF_MEDIA_CONTENT_TYPE_TEMPLATE)
         self._current_position_template = config.get(CONF_CURRENT_POSITION_TEMPLATE)
+        self._media_position_updated_at_template = config.get(
+            CONF_MEDIA_POSITION_UPDATED_AT_TEMPLATE
+        )
         self._media_duration_template = config.get(CONF_MEDIA_DURATION_TEMPLATE)
         self._current_repeat_template = config.get(CONF_CURRENT_REPEAT_TEMPLATE)
         self._current_shuffle_template = config.get(CONF_CURRENT_SHUFFLE_TEMPLATE)
+        self._media_position_updated_at_is_fallback = False
+        self._logged_bad_updated_at_values: set[str] = set()
 
         self._attr_media_image_remotely_accessible = config.get(
             CONF_MEDIA_IMAGE_URL_REMOTELY_ACCESSIBLE, False
@@ -434,7 +442,15 @@ class MediaPlayerTemplate(TemplateEntity, MediaPlayerEntity):
                 self._current_position_template,
                 None,
                 self._update_media_position,
-                none_on_template_error=True,
+                none_on_template_error=False,
+            )
+        if self._media_position_updated_at_template is not None:
+            self.add_template_attribute(
+                "_attr_media_position_updated_at",
+                self._media_position_updated_at_template,
+                None,
+                self._update_media_position_updated_at,
+                none_on_template_error=False,
             )
         if self._media_duration_template is not None:
             self.add_template_attribute(
@@ -442,7 +458,7 @@ class MediaPlayerTemplate(TemplateEntity, MediaPlayerEntity):
                 self._media_duration_template,
                 None,
                 self._update_media_duration,
-                none_on_template_error=True,
+                none_on_template_error=False,
             )
         if self._current_sound_mode_template is not None:
             self.add_template_attribute(
@@ -506,7 +522,11 @@ class MediaPlayerTemplate(TemplateEntity, MediaPlayerEntity):
             self._attr_state = None
             return
 
-        result = vol.Coerce(str)(result).lower()
+        result = vol.Coerce(str)(result).strip().lower()
+        if result in ("unknown", "unavailable"):
+            self._attr_state = None
+            return
+
         try:
             if result == "true":
                 self._attr_state = MediaPlayerState.ON
@@ -671,38 +691,87 @@ class MediaPlayerTemplate(TemplateEntity, MediaPlayerEntity):
     @callback
     def _update_media_position(self, result):
         if isinstance(result, TemplateError) or result is None:
-            self._attr_media_position_updated_at = None
             self._attr_media_position = None
+            if (
+                self._media_position_updated_at_template is None
+                or self._media_position_updated_at_is_fallback
+            ):
+                self._attr_media_position_updated_at = None
             return
 
         try:
-            if self._attr_state in (MediaPlayerState.PLAYING, MediaPlayerState.PAUSED):
+            self._attr_media_position = cv.positive_int(result)
+            if self._media_position_updated_at_template is None:
                 self._attr_media_position_updated_at = dt_util.utcnow()
-                self._attr_media_position = cv.positive_int(result)
-            else:
-                self._attr_media_position_updated_at = None
-                self._attr_media_position = None
+            elif self._attr_media_position_updated_at is None:
+                self._attr_media_position_updated_at = dt_util.utcnow()
+                self._media_position_updated_at_is_fallback = True
         except vol.Invalid:
             _LOGGER.error(
                 "Template entity %s received an invalid media position %s",
                 self.entity_id,
                 result,
             )
-            self._attr_media_position_updated_at = None
             self._attr_media_position = None
+            if (
+                self._media_position_updated_at_template is None
+                or self._media_position_updated_at_is_fallback
+            ):
+                self._attr_media_position_updated_at = None
+
+    @callback
+    def _update_media_position_updated_at(self, result):
+        if (
+            result is None
+            or isinstance(result, TemplateError)
+            or (
+                isinstance(result, str)
+                and result.strip().lower() in ("", "none", "unknown", "unavailable")
+            )
+        ):
+            self._media_position_updated_at_is_fallback = True
+            if self._attr_media_position is not None:
+                self._attr_media_position_updated_at = dt_util.utcnow()
+            else:
+                self._attr_media_position_updated_at = None
+            return
+
+        if isinstance(result, datetime.datetime):
+            self._media_position_updated_at_is_fallback = False
+            if result.tzinfo is None or result.tzinfo.utcoffset(result) is None:
+                result = result.replace(tzinfo=dt_util.UTC)
+            self._attr_media_position_updated_at = dt_util.as_utc(result)
+            return
+
+        if isinstance(result, str):
+            parsed = dt_util.parse_datetime(result.strip())
+            if parsed is not None:
+                self._media_position_updated_at_is_fallback = False
+                if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+                    parsed = parsed.replace(tzinfo=dt_util.UTC)
+                self._attr_media_position_updated_at = dt_util.as_utc(parsed)
+                return
+
+        # Invalid timestamp
+        bad_val = str(result)
+        if bad_val not in self._logged_bad_updated_at_values:
+            self._logged_bad_updated_at_values.add(bad_val)
+            _LOGGER.error(
+                "Template entity %s received an invalid media position updated at timestamp %s",
+                self.entity_id,
+                result,
+            )
+        self._media_position_updated_at_is_fallback = True
+        self._attr_media_position_updated_at = dt_util.utcnow()
 
     @callback
     def _update_media_duration(self, result):
-        if isinstance(result, TemplateError):
+        if isinstance(result, TemplateError) or result is None:
             self._attr_media_duration = None
             return
 
         try:
-            if self._attr_state in (MediaPlayerState.PLAYING, MediaPlayerState.PAUSED):
-                self._attr_media_duration = cv.positive_int(result)
-            else:
-                self._attr_media_duration = None
-
+            self._attr_media_duration = cv.positive_int(result)
         except vol.Invalid:
             _LOGGER.error(
                 "Template entity %s received an invalid media duration %s",
